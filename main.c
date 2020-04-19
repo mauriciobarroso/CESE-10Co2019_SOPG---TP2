@@ -17,54 +17,31 @@
 
 /********************************[ macros ]*****************************************/
 
-#define BUFFER_MAX_SIZE	128
-#define SOCKETS_MAX_NUM	2
-#define PORT_NUMBER		10000
-#define NET_ADDR		"127.0.0.1"
-#define UART_NUM		2
-#define UART_BAUDRATE	115200
+#define BUFFER_MAX_SIZE	128			// tamaño maximo del buffer
+#define THREADS_MAX_NUM	2			// número máximo de sockets 
+#define PORT_NUMBER		10000		// puerto de conexión del socket
+#define NET_ADDR		"127.0.0.1"	// dirección IP del server
+#define UART_NUM		2 			// número de identificador del puerto serie utilizado
+#define UART_BAUDRATE	115200 		// baudrate del puerto serie
+#define LISTE_BACKLOG	10			// backlog de listen
 
 /********************************[ global data ]************************************/
 
-char buffer[ BUFFER_MAX_SIZE ];
-int s;
-int newfd;
-
-pthread_t thread[ SOCKETS_MAX_NUM ];
+char buffer[ BUFFER_MAX_SIZE ];			// buffer para guardar los mensajes de la UART y el socket
+int sockfd;								// file descriptor del socket server para escuchar conexiones nuevas
+int newSockfd; 							// file descriptor del socket server para leer y escribir el socket
+pthread_t thread[ THREADS_MAX_NUM ];	// array para los threads
 
 /********************************[ functions declaration ]**************************/
 
 /* función para bloquear signals */
-void blockSign( void )
-{
-	sigset_t set;
-	int s;
-	sigemptyset( &set );
-	sigaddset( &set, SIGINT );
-	sigaddset( &set, SIGTERM );
-	pthread_sigmask( SIG_BLOCK, &set, NULL );
-}
+void blockSig( void );
 
 /* función para desbloquear signals */
-void unblockSign( void )
-{
-	sigset_t set;
-	int s;
-	sigemptyset( &set );
-	sigaddset( &set, SIGINT );
-	sigaddset( &set, SIGTERM );
-	pthread_sigmask( SIG_UNBLOCK, &set, NULL );
-}
+void unblockSig( void );
 
-/* handler para manejo de SIGINT */
-void sigintHandler( int sig )
-{
-	write(0, "Ahhh! SIGINT!\n", 14);
-	serial_close();
-	close( newfd );
-	close( s );
-	//exit( 1 );
-}
+/* handler para manejo de SIGINT y SIGTERM */
+void sigHandler( int sig );
 
 /* handler para el thread que recibe del socket y manda a la UART */
 void * receiveFromSocketSendToUart( void * parameters );
@@ -77,48 +54,14 @@ void * receiveFromUartSendToSocket( void * parameters );
 
 int main()
 {
+	/* se declaran las estructuras y variables para el socket */
 	socklen_t addrLen;
 	struct sockaddr_in clientAddr;
 	struct sockaddr_in serverAddr;
 	struct sigaction sa;
-	
-	/* se abre el puerto serial */
-	if( serial_open( UART_NUM, UART_BAUDRATE ) == 1 )
-		exit( 1 );
 
-	/* se crear el socket para el server */
-	s = socket( PF_INET,SOCK_STREAM, 0 );
-
-	/* se cargan los datos de IP:PORT del server */
-    bzero( ( char * )&serverAddr, sizeof( serverAddr ) );
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons( PORT_NUMBER );
-    serverAddr.sin_addr.s_addr = inet_addr( NET_ADDR );
-    
-	/* manejo de errores */
-	if( serverAddr.sin_addr.s_addr == INADDR_NONE )
-    {
-        fprintf( stderr,"ERROR invalid server IP\r\n" );
-        return 1;
-    }
-
-	/* se abre el puerto con bind */
-	if ( bind(s, ( struct sockaddr * )&serverAddr, sizeof( serverAddr ) ) == -1 ) 
-	{
-		close( s );
-		perror( "bind" );
-		return 1;
-	}
-
-	/* se pone el socket en listen */
-	if ( listen( s, 10 ) == -1 ) // backlog=10
-  	{
-    	perror( "listen" );
-    	exit( 1 );
-  	}
-
-    /* signal action: SIGINT */
-    sa.sa_handler = sigintHandler;
+	/* se configura SIGINT y SIGTERM */
+    sa.sa_handler = sigHandler;
     sa.sa_flags = 0;
     if( sigemptyset( &sa.sa_mask ) == -1)
     {
@@ -131,9 +74,6 @@ int main()
         exit( 1 );
     }
 
-	/* signal action: SIGTERM */
-    sa.sa_handler = sigintHandler;
-    sa.sa_flags = 0;
     if( sigemptyset( &sa.sa_mask ) == -1)
     {
         perror( "sigemptyset" );
@@ -146,32 +86,67 @@ int main()
     }
 
 	/* se bloquean las señales */
-	blockSign();
+	blockSig();
+
+	/* se abre el puerto serial */
+	if( serial_open( UART_NUM, UART_BAUDRATE ) == 1 )
+		exit( 1 );
+
+	/* se crear el socket para el server */
+	sockfd = socket( PF_INET,SOCK_STREAM, 0 );
+
+	/* se cargan los datos de IP:PORT del server */
+    bzero( ( char * )&serverAddr, sizeof( serverAddr ) );
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons( PORT_NUMBER );
+    serverAddr.sin_addr.s_addr = inet_addr( NET_ADDR );
+    
+	/* manejo de errores */
+	if( serverAddr.sin_addr.s_addr == INADDR_NONE )
+    {
+        fprintf( stderr, "error invalid server IP\n" );
+        exit( 1 );
+    }
+
+	/* se abre el puerto con bind */
+	if ( bind( sockfd, ( struct sockaddr * )&serverAddr, sizeof( serverAddr ) ) == -1 ) 
+	{
+		close( sockfd );
+		perror( "bind" );
+		exit( 1 );
+	}
+
+	/* se setea el socket en listen */
+	if ( listen( sockfd, LISTE_BACKLOG ) == -1 )
+  	{
+    	perror( "listen" );
+    	exit( 1 );
+  	}
 
 	/* infinite loop */ 
 	for( ;; )
 	{
 		/* se ejecuta accept para recibir conexiones nuevas */
-		addrLen = sizeof( struct sockaddr_in );
-		newfd = accept( s, ( struct sockaddr * )&clientAddr, &addrLen );
-		if ( newfd == -1 )
+		addrLen = sizeof( struct sockaddr_in ); // se guarda en addrLen el tamaño de la estructura sockaddr_in
+		newSockfd = accept( sockfd, ( struct sockaddr * )&clientAddr, &addrLen );
+		if ( newSockfd == -1 )
 		{
 			perror( "accept" );
 			exit(1);
 		}
 
-		printf  ( "server: new connection from %s\n", inet_ntoa( clientAddr.sin_addr ) );
+		printf  ( "server: nueva coenexión desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de una nueva conexión
 
 		/* se crea un nuevo thread para recibir del socket */
 		pthread_create ( &thread[ 0 ], NULL, receiveFromSocketSendToUart, NULL );
 		pthread_create ( &thread[ 1 ], NULL, receiveFromUartSendToSocket, NULL );
 
 		/* se desbloquean los señales */
-		unblockSign();
+		unblockSig();
 
 		/* espera a que el thread[ 0 ] termine y cancela el thread[ 1 ] */
 		pthread_join( thread[ 0 ], NULL );
-		printf( "server: closed connection from %s\n", inet_ntoa( clientAddr.sin_addr ) );
+		printf( "server: conexión cerrada desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de la desconexión del cliente
 		pthread_cancel( thread[ 1 ] );
 	}
 
@@ -180,6 +155,39 @@ int main()
 
 /********************************[ functions definition ]***************************/
 
+/* función para bloquear signals */
+void blockSig( void )
+{
+	sigset_t set;
+	int s;
+	sigemptyset( &set );
+	sigaddset( &set, SIGINT );
+	sigaddset( &set, SIGTERM );
+	pthread_sigmask( SIG_BLOCK, &set, NULL );
+}
+
+/* función para desbloquear signals */
+void unblockSig( void )
+{
+	sigset_t set;
+	int s;
+	sigemptyset( &set );
+	sigaddset( &set, SIGINT );
+	sigaddset( &set, SIGTERM );
+	pthread_sigmask( SIG_UNBLOCK, &set, NULL );
+}
+
+/* handler para manejo de SIGINT */
+void sigHandler( int sig )
+{
+	write(0, "Ahhh! SIGINT!\n", 14);
+	serial_close();
+	close( newSockfd );
+	close( sockfd );
+	//exit( 1 );
+}
+
+/* handler para el thread que recibe del socket y manda a la UART */
 void * receiveFromSocketSendToUart( void * parameters )
 {
 	int n;
@@ -187,7 +195,7 @@ void * receiveFromSocketSendToUart( void * parameters )
 	for( ;; )
 	{
 		/* se leen los mensajes enviados por el socket cliente */
-		n = read( newfd, buffer, BUFFER_MAX_SIZE );
+		n = read( newSockfd, buffer, BUFFER_MAX_SIZE );
 		if( n == -1 )
 		{
 			perror( "read_socket" );
@@ -196,12 +204,12 @@ void * receiveFromSocketSendToUart( void * parameters )
 
 		else if ( n == 0 )
 		{
-			close( newfd );
+			close( newSockfd );
 			return NULL;
 		}
 
 		buffer[ n ] = '\0';
-		printf( "recibido por el socket %s\n", buffer );
+		printf( "recibido por el socket %s\n", buffer ); // 
 
 		/* se manda a la UART el mensaje */
 		serial_send( buffer, 8 );
@@ -210,6 +218,7 @@ void * receiveFromSocketSendToUart( void * parameters )
 	return NULL;
 }
 
+/* handler para el thread que recibe de la UART y manda al socket */
 void * receiveFromUartSendToSocket( void * parameters )
 {
 	int n;
@@ -224,10 +233,10 @@ void * receiveFromUartSendToSocket( void * parameters )
 			printf( "recibido por la uart %s\n", buffer );
 			
 			/* se envian los mensajes al socket */
-			if( write( newfd, buffer, strlen( buffer ) ) == -1 )
+			if( write( newSockfd, buffer, strlen( buffer ) ) == -1 )
 			{
 				perror( "socket_write" );
-				close( newfd );
+				close( newSockfd );
 				return NULL;
 			}
 		}
