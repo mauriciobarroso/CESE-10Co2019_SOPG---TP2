@@ -122,6 +122,12 @@ int main()
     	exit( 1 );
   	}
 
+	/* se crea un thread para recibir de la UART y mandar al socket */
+	pthread_create ( &thread, NULL, receiveFromUartSendToSocket, NULL );
+
+	/* se desbloquean las señales SIGINT y SIGTERM */
+	unblockSig();
+
 	/* infinite loop */ 
 	for( ;; )
 	{
@@ -135,13 +141,7 @@ int main()
 			exit(1);
 		}
 
-		printf  ( "server: nueva conexión desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de una nueva conexión
-
-		/* se crea un thread para recibir de la UART y mandar al socket */
-		pthread_create ( &thread, NULL, receiveFromUartSendToSocket, NULL );
-
-		/* se desbloquean las señales SIGINT y SIGTERM */
-		unblockSig();
+		printf  ( "nueva conexión desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de una nueva conexión
 
 		/* se lanza la función que recibe del socket y envia a la UART */
 		receiveFromSocketSendToUart( NULL );	
@@ -177,11 +177,11 @@ void unblockSig( void )
 /* handler para manejo de SIGINT */
 void sigHandler( int sig )
 {
-	printf( "server: conexión cerrada\n" );
 	pthread_cancel( thread );
 	pthread_join( thread, NULL );
 	close( newSockfd );
 	close( sockfd );
+	printf( "server terminado\n" );
 	exit( 1 );
 }
 
@@ -202,7 +202,7 @@ void * receiveFromSocketSendToUart( void * parameters )
 
 		else if ( n == 0 )
 		{
-			printf( "server: conexión cerrada\n" );
+			printf( "conexión cerrada\n" );
 			close( newSockfd );
 			return NULL;
 		}
@@ -211,7 +211,7 @@ void * receiveFromSocketSendToUart( void * parameters )
 		printf( "recibido por el socket %s\n", buffer ); // 
 
 		/* se manda a la UART el mensaje */
-		serial_send( buffer, 8 );
+		serial_send( buffer, n );
 	}
 	
 	return NULL;
