@@ -30,6 +30,7 @@ char buffer[ BUFFER_MAX_SIZE ];	// buffer para guardar los mensajes de la UART y
 int sockfd;						// file descriptor del socket server para escuchar conexiones nuevas
 int newSockfd; 					// file descriptor del socket server para leer y escribir el socket
 pthread_t thread;				// array para los threads
+pthread_t thread1;
 
 /********************************[ functions declaration ]**************************/
 
@@ -47,7 +48,6 @@ void * receiveFromSocketSendToUart( void * parameters );
 
 /* handler para el thread que recibe de la UART y manda al socket */
 void * receiveFromUartSendToSocket( void * parameters );
-
 
 /********************************[ main function ]**********************************/
 
@@ -140,6 +140,9 @@ int main()
 		/* se crea un thread para recibir de la UART y mandar al socket */
 		pthread_create ( &thread, NULL, receiveFromUartSendToSocket, NULL );
 
+		/* se desbloquean las señales SIGINT y SIGTERM */
+		unblockSig();
+
 		/* se lanza la función que recibe del socket y envia a la UART */
 		receiveFromSocketSendToUart( NULL );	
 	}
@@ -174,6 +177,7 @@ void unblockSig( void )
 /* handler para manejo de SIGINT */
 void sigHandler( int sig )
 {
+	printf( "server: conexión cerrada\n" );
 	pthread_cancel( thread );
 	pthread_join( thread, NULL );
 	close( newSockfd );
@@ -217,9 +221,6 @@ void * receiveFromSocketSendToUart( void * parameters )
 void * receiveFromUartSendToSocket( void * parameters )
 {
 	int n;
-
-	/* se desbloquean las señales SIGINT y SIGTERM */
-	unblockSig();
 
 	for( ;; )
 	{	
