@@ -26,11 +26,11 @@
 
 /********************************[ global data ]************************************/
 
-char buffer[ BUFFER_MAX_SIZE ];	// buffer para guardar los mensajes de la UART y el socket
-int sockfd;						// file descriptor del socket server para escuchar conexiones nuevas
-int newSockfd; 					// file descriptor del socket server para leer y escribir el socket
-pthread_t thread;				// array para los threads
-pthread_t thread1;
+char buffer[ BUFFER_MAX_SIZE ];							// buffer para guardar los mensajes de la UART y el socket
+int sockfd;												// file descriptor del socket server para escuchar conexiones nuevas
+int newSockfd; 											// file descriptor del socket server para leer y escribir el socket
+pthread_t thread;										// array para los threads
+pthread_mutex_t mutexData = PTHREAD_MUTEX_INITIALIZER;	// mutex para la UART
 
 /********************************[ functions declaration ]**************************/
 
@@ -219,11 +219,15 @@ void * receiveFromSocketSendToUart( void * parameters )
 			return NULL;
 		}
 
+		pthread_mutex_lock (&mutexData);
+
 		buffer[ n ] = '\0';
 		printf( "recibido por el socket %s\n", buffer ); // 
 
 		/* se manda a la UART el mensaje */
 		serial_send( buffer, n );
+
+		pthread_mutex_unlock (&mutexData);
 	}
 	
 	return NULL;
@@ -240,6 +244,8 @@ void * receiveFromUartSendToSocket( void * parameters )
 		n = serial_receive( buffer, BUFFER_MAX_SIZE );
 		if( n > 0 )
 		{
+			pthread_mutex_lock (&mutexData);
+
 			buffer[ n - 2 ] = '\0'; // se restan 2 unidades para eliminar "\r\n"
 			printf( "recibido por la uart %s\n", buffer );
 			
@@ -249,6 +255,8 @@ void * receiveFromUartSendToSocket( void * parameters )
 				perror( "socket_write" );
 				return NULL;
 			}
+
+			pthread_mutex_unlock (&mutexData);
 		}
 
 		/* tiempo de refresco del polling */
