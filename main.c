@@ -18,19 +18,18 @@
 /********************************[ macros ]*****************************************/
 
 #define BUFFER_MAX_SIZE	128			// tamaño maximo del buffer
-#define THREADS_MAX_NUM	2			// número máximo de sockets 
 #define PORT_NUMBER		10000		// puerto de conexión del socket
 #define NET_ADDR		"127.0.0.1"	// dirección IP del server
-#define UART_NUM		2 			// número de identificador del puerto serie utilizado
+#define UART_NUM		1 			// número de identificador del puerto serie utilizado
 #define UART_BAUDRATE	115200 		// baudrate del puerto serie
 #define LISTE_BACKLOG	10			// backlog de listen
 
 /********************************[ global data ]************************************/
 
-char buffer[ BUFFER_MAX_SIZE ];			// buffer para guardar los mensajes de la UART y el socket
-int sockfd;								// file descriptor del socket server para escuchar conexiones nuevas
-int newSockfd; 							// file descriptor del socket server para leer y escribir el socket
-pthread_t thread[ THREADS_MAX_NUM ];	// array para los threads
+char buffer[ BUFFER_MAX_SIZE ];	// buffer para guardar los mensajes de la UART y el socket
+int sockfd;						// file descriptor del socket server para escuchar conexiones nuevas
+int newSockfd; 					// file descriptor del socket server para leer y escribir el socket
+pthread_t thread;				// array para los threads
 
 /********************************[ functions declaration ]**************************/
 
@@ -127,6 +126,7 @@ int main()
 	for( ;; )
 	{
 		/* se ejecuta accept para recibir conexiones nuevas */
+		printf( "esperando conexiones entrantes...\n" );
 		addrLen = sizeof( struct sockaddr_in ); // se guarda en addrLen el tamaño de la estructura sockaddr_in
 		newSockfd = accept( sockfd, ( struct sockaddr * )&clientAddr, &addrLen );
 		if ( newSockfd == -1 )
@@ -135,19 +135,13 @@ int main()
 			exit(1);
 		}
 
-		printf  ( "server: nueva coenexión desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de una nueva conexión
+		printf  ( "server: nueva conexión desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de una nueva conexión
 
-		/* se crea un nuevo thread para recibir del socket */
-		pthread_create ( &thread[ 0 ], NULL, receiveFromSocketSendToUart, NULL );
-		pthread_create ( &thread[ 1 ], NULL, receiveFromUartSendToSocket, NULL );
+		/* se crea un thread para recibir de la UART y mandar al socket */
+		pthread_create ( &thread, NULL, receiveFromUartSendToSocket, NULL );
 
-		/* se desbloquean los señales */
-		unblockSig();
-
-		/* espera a que el thread[ 0 ] termine y cancela el thread[ 1 ] */
-		pthread_join( thread[ 0 ], NULL );
-		printf( "server: conexión cerrada desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de la desconexión del cliente
-		pthread_cancel( thread[ 1 ] );
+		/* se lanza la función que recibe del socket y envia a la UART */
+		receiveFromSocketSendToUart( NULL );	
 	}
 
 	return 0;
@@ -180,11 +174,11 @@ void unblockSig( void )
 /* handler para manejo de SIGINT */
 void sigHandler( int sig )
 {
-	write(0, "Ahhh! SIGINT!\n", 14);
-	serial_close();
+	pthread_cancel( thread );
+	pthread_join( thread, NULL );
 	close( newSockfd );
 	close( sockfd );
-	//exit( 1 );
+	exit( 1 );
 }
 
 /* handler para el thread que recibe del socket y manda a la UART */
@@ -204,6 +198,7 @@ void * receiveFromSocketSendToUart( void * parameters )
 
 		else if ( n == 0 )
 		{
+			printf( "server: conexión cerrada\n" );
 			close( newSockfd );
 			return NULL;
 		}
@@ -223,6 +218,9 @@ void * receiveFromUartSendToSocket( void * parameters )
 {
 	int n;
 
+	/* se desbloquean las señales SIGINT y SIGTERM */
+	unblockSig();
+
 	for( ;; )
 	{	
 		/* se leen los mensajes enviados por la EDU-CIAA */
@@ -236,12 +234,12 @@ void * receiveFromUartSendToSocket( void * parameters )
 			if( write( newSockfd, buffer, strlen( buffer ) ) == -1 )
 			{
 				perror( "socket_write" );
-				close( newSockfd );
 				return NULL;
 			}
 		}
+
 		/* tiempo de refresco del polling */
-		usleep( 5000);
+		usleep( 50000 );
 	}
 	
 	return NULL;
