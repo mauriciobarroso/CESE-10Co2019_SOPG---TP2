@@ -20,7 +20,7 @@
 #define BUFFER_MAX_SIZE	128			// tamaño maximo del buffer
 #define PORT_NUMBER		10000		// puerto de conexión del socket
 #define NET_ADDR		"127.0.0.1"	// dirección IP del server
-#define UART_NUM		1 			// número de identificador del puerto serie utilizado
+#define UART_NUM		3 			// número de identificador del puerto serie utilizado
 #define UART_BAUDRATE	115200 		// baudrate del puerto serie
 #define LISTE_BACKLOG	10			// backlog de listen
 
@@ -92,7 +92,12 @@ int main()
 		exit( 1 );
 
 	/* se crear el socket para el server */
-	sockfd = socket( PF_INET,SOCK_STREAM, 0 );
+	sockfd = socket( PF_INET, SOCK_STREAM, 0 );
+	if( sockfd == -1 )
+	{
+		perror( "socket" );
+        exit( 1 );
+	}
 
 	/* se cargan los datos de IP:PORT del server */
     bzero( ( char * )&serverAddr, sizeof( serverAddr ) );
@@ -122,8 +127,14 @@ int main()
     	exit( 1 );
   	}
 
+	printf( "server iniciado\n" );
+
 	/* se crea un thread para recibir de la UART y mandar al socket */
-	pthread_create ( &thread, NULL, receiveFromUartSendToSocket, NULL );
+	if( pthread_create ( &thread, NULL, receiveFromUartSendToSocket, NULL ) == -1 )
+	{
+		perror( "pthread_create" );
+		exit( 1 );
+	}
 
 	/* se desbloquean las señales SIGINT y SIGTERM */
 	unblockSig();
@@ -138,7 +149,7 @@ int main()
 		if ( newSockfd == -1 )
 		{
 			perror( "accept" );
-			exit(1);
+			exit( 1 );
 		}
 
 		printf  ( "nueva conexión desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de una nueva conexión
@@ -177,6 +188,7 @@ void unblockSig( void )
 /* handler para manejo de SIGINT */
 void sigHandler( int sig )
 {
+	/* proceso de cierre */
 	pthread_cancel( thread );
 	pthread_join( thread, NULL );
 	close( newSockfd );
