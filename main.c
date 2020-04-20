@@ -219,14 +219,17 @@ void * receiveFromSocketSendToUart( void * parameters )
 			return NULL;
 		}
 
+		/* se bloquea el mutex */
 		pthread_mutex_lock (&mutexData);
 
+		/* se imprimi un mensaje de recepción */
 		buffer[ n ] = '\0';
 		printf( "recibido por el socket %s\n", buffer ); // 
 
 		/* se manda a la UART el mensaje */
 		serial_send( buffer, n );
 
+		/* se desbloquea el mutex */
 		pthread_mutex_unlock (&mutexData);
 	}
 	
@@ -244,8 +247,10 @@ void * receiveFromUartSendToSocket( void * parameters )
 		n = serial_receive( buffer, BUFFER_MAX_SIZE );
 		if( n > 0 )
 		{
+			/* se bloquea el mutex */
 			pthread_mutex_lock (&mutexData);
 
+			/* se imprimi un mensaje de recepción */
 			buffer[ n - 2 ] = '\0'; // se restan 2 unidades para eliminar "\r\n"
 			printf( "recibido por la uart %s\n", buffer );
 			
@@ -256,6 +261,7 @@ void * receiveFromUartSendToSocket( void * parameters )
 				return NULL;
 			}
 
+			/* se desbloquea el mutex */
 			pthread_mutex_unlock (&mutexData);
 		}
 
