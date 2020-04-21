@@ -17,18 +17,21 @@
 
 /********************************[ macros ]*****************************************/
 
-#define BUFFER_MAX_SIZE	128			// tamaño maximo del buffer
-#define PORT_NUMBER		10000		// puerto de conexión del socket
-#define NET_ADDR		"127.0.0.1"	// dirección IP del server
-#define UART_NUM		3 			// número de identificador del puerto serie utilizado
-#define UART_BAUDRATE	115200 		// baudrate del puerto serie
-#define LISTE_BACKLOG	10			// backlog de listen
+#define BUFFER_MAX_SIZE		128			// tamaño maximo del buffer
+#define PORT_NUMBER			10000		// puerto de conexión del socket
+#define NET_ADDR			"127.0.0.1"	// dirección IP del server
+#define UART_NUM			1 			// número de identificador del puerto serie utilizado
+#define UART_BAUDRATE		115200 		// baudrate del puerto serie
+#define LISTE_BACKLOG		1			// backlog de listen
+#define ERROR_FUNCTION		0			// valor de retorno si existe un error
+#define CLIENT_DISCONNECT	1			// valor de retorno si se desconecta el cliente
+#define SERVER_CLOSE		2			// valor de retorno si se cierra el server
 
 /********************************[ global data ]************************************/
 
 char buffer[ BUFFER_MAX_SIZE ];							// buffer para guardar los mensajes de la UART y el socket
 int sockfd;												// file descriptor del socket server para escuchar conexiones nuevas
-int newSockfd; 											// file descriptor del socket server para leer y escribir el socket
+int newSockfd = 0; 										// file descriptor del socket server para leer y escribir el socket
 pthread_t thread;										// array para los threads
 pthread_mutex_t mutexData = PTHREAD_MUTEX_INITIALIZER;	// mutex para la UART
 
@@ -44,10 +47,13 @@ void unblockSig( void );
 void sigHandler( int sig );
 
 /* handler para el thread que recibe del socket y manda a la UART */
-void * receiveFromSocketSendToUart( void * parameters );
+int receiveFromSocketSendToUart( void * parameters );
 
 /* handler para el thread que recibe de la UART y manda al socket */
 void * receiveFromUartSendToSocket( void * parameters );
+
+/* función para terminar el server */
+void closeServer( void );
 
 /********************************[ main function ]**********************************/
 
@@ -142,20 +148,22 @@ int main()
 	/* infinite loop */ 
 	for( ;; )
 	{
-		/* se ejecuta accept para recibir conexiones nuevas */
+		/* se imprime mensaje de espera */
 		printf( "esperando conexiones entrantes...\n" );
+
+		/* se ejecuta accept para recibir conexiones nuevas */
 		addrLen = sizeof( struct sockaddr_in ); // se guarda en addrLen el tamaño de la estructura sockaddr_in
 		newSockfd = accept( sockfd, ( struct sockaddr * )&clientAddr, &addrLen );
+		
+		/* se cierra el server si se detecta error en connect */
 		if ( newSockfd == -1 )
-		{
-			perror( "accept" );
-			exit( 1 );
-		}
+			closeServer();
 
 		printf  ( "nueva conexión desde %s\n", inet_ntoa( clientAddr.sin_addr ) ); // mensaje para informar de una nueva conexión
 
-		/* se lanza la función que recibe del socket y envia a la UART */
-		receiveFromSocketSendToUart( NULL );	
+		/* se lanza la función que recibe del socket y envia a la UART y verifica si en algún momento se cierra el server*/
+		if( receiveFromSocketSendToUart( NULL ) == SERVER_CLOSE )	
+			closeServer();
 	}
 
 	return 0;
@@ -188,17 +196,12 @@ void unblockSig( void )
 /* handler para manejo de SIGINT */
 void sigHandler( int sig )
 {
-	/* proceso de cierre */
-	pthread_cancel( thread );
-	pthread_join( thread, NULL );
+	/* se cierra el socket creado con connect */
 	close( newSockfd );
-	close( sockfd );
-	printf( "server terminado\n" );
-	exit( 1 );
 }
 
 /* handler para el thread que recibe del socket y manda a la UART */
-void * receiveFromSocketSendToUart( void * parameters )
+int receiveFromSocketSendToUart( void * parameters )
 {
 	int n;
 
@@ -206,21 +209,29 @@ void * receiveFromSocketSendToUart( void * parameters )
 	{
 		/* se leen los mensajes enviados por el socket cliente */
 		n = read( newSockfd, buffer, BUFFER_MAX_SIZE );
+
+		/* se retorna el valor SEVER_CLOSE si read da error */
 		if( n == -1 )
 		{
 			perror( "read_socket" );
-			return NULL;
+			return SERVER_CLOSE;
 		}
 
+		/* se retorna el valor CLIENT_DISCONNECT si read da 0 */
 		else if ( n == 0 )
 		{
+			/* se bloquea el mutex */
+			pthread_mutex_lock ( &mutexData );
+			
 			printf( "conexión cerrada\n" );
 			close( newSockfd );
-			return NULL;
-		}
+			newSockfd = 0;
 
-		/* se bloquea el mutex */
-		pthread_mutex_lock (&mutexData);
+			/* se desbloquea el mutex */
+			pthread_mutex_unlock ( &mutexData );
+
+			return CLIENT_DISCONNECT;
+		}
 
 		/* se imprimi un mensaje de recepción */
 		buffer[ n ] = '\0';
@@ -228,12 +239,9 @@ void * receiveFromSocketSendToUart( void * parameters )
 
 		/* se manda a la UART el mensaje */
 		serial_send( buffer, n );
-
-		/* se desbloquea el mutex */
-		pthread_mutex_unlock (&mutexData);
 	}
 	
-	return NULL;
+	return ERROR_FUNCTION;
 }
 
 /* handler para el thread que recibe de la UART y manda al socket */
@@ -245,11 +253,12 @@ void * receiveFromUartSendToSocket( void * parameters )
 	{	
 		/* se leen los mensajes enviados por la EDU-CIAA */
 		n = serial_receive( buffer, BUFFER_MAX_SIZE );
-		if( n > 0 )
-		{
-			/* se bloquea el mutex */
-			pthread_mutex_lock (&mutexData);
 
+		/* se bloquea el mutex */
+		pthread_mutex_lock (&mutexData);
+
+		if( n > 0 && newSockfd > 0 )
+		{
 			/* se imprimi un mensaje de recepción */
 			buffer[ n - 2 ] = '\0'; // se restan 2 unidades para eliminar "\r\n"
 			printf( "recibido por la uart %s\n", buffer );
@@ -260,14 +269,24 @@ void * receiveFromUartSendToSocket( void * parameters )
 				perror( "socket_write" );
 				return NULL;
 			}
-
-			/* se desbloquea el mutex */
-			pthread_mutex_unlock (&mutexData);
 		}
+
+		/* se desbloquea el mutex */
+		pthread_mutex_unlock (&mutexData);
 
 		/* tiempo de refresco del polling */
 		usleep( 50000 );
 	}
 	
 	return NULL;
+}
+
+/* función para terminar el server */
+void closeServer( void )
+{
+	pthread_cancel( thread );
+	pthread_join( thread, NULL );
+	close( sockfd );
+	printf( "server terminado\n" );
+	exit( 1 );
 }
